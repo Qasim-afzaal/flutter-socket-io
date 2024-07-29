@@ -1,125 +1,212 @@
+import 'dart:typed_data';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:logger/logger.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const MaterialApp(
+    home: SocketIOExample(),
+  ));
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class SocketIOExample extends StatefulWidget {
+  const SocketIOExample({super.key});
 
-  // This widget is the root of your application.
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
-    );
+  _SocketIOExampleState createState() => _SocketIOExampleState();
+}
+
+class _SocketIOExampleState extends State<SocketIOExample> {
+  late IO.Socket socket;
+  late TextEditingController _controller;
+  List<String> messages = [];
+  File? _selectedImage;
+  final picker = ImagePicker();
+  final Logger _logger = Logger();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  // Function to request permissions
+  Future<void> _requestPermissions() async {
+    final status = await Permission.photos.request();
+    if (!status.isGranted) {
+      _logger.e('Permission denied');
+    }
+  }
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  // Function to initialize and connect to the Socket.IO server
+  void _connect() {
+    socket = IO.io('add link', <String, dynamic>{
+      'transports': ['websocket'],
+    });
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
+    // Listen for the 'connect' event
+    socket.on('connect', (_) {
+      _logger.i('Connected');
+    });
 
-  final String title;
+    // Listen for custom events from the server
+    socket.on('message', (data) {
+      _logger.i('Received: $data');
+      setState(() {
+        messages.add(data.toString());
+      });
+    });
 
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
+    // Handle connection errors
+    socket.on('connect_error', (error) {
+      _logger.e('Connect Error: $error');
+    });
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+    // Handle disconnection events
+    socket.on('disconnect', (_) {
+      _logger.i('Disconnected');
     });
   }
 
   @override
+  void dispose() {
+    // Clean up resources
+    _logger.i('Closing Socket.IO connection');
+    socket.dispose();
+      _controller.dispose();
+    super.dispose();
+  }
+
+  // Function to pick an image from the gallery
+  Future<void> _pickImage() async {
+    // Request permissions before picking an image
+    await _requestPermissions();
+
+    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+
+    if (pickedFile != null) {
+      setState(() {
+        _selectedImage = File(pickedFile.path);
+        print('Selected image: ${_selectedImage!.path}');
+      });
+    }
+  }
+
+  // Function to convert file to Uint8List buffer
+  Future<Uint8List> _convertImageToBuffer(File image) async {
+    return await image.readAsBytes();
+  }
+
+  // Function to send a custom event with image data to the server
+  Future<void> _sendMessage() async {
+    if (_controller.text.isNotEmpty || _selectedImage != null) {
+      String message = _controller.text;
+
+      // Convert image to buffer if selected
+      Uint8List imageBuffer = Uint8List(0);
+      if (_selectedImage != null) {
+        imageBuffer = await _convertImageToBuffer(_selectedImage!);
+      }
+
+      // Create the message body
+      Map<String, dynamic> messageBody = {
+        'userId': 'c44ecc2f-8155-483c-bb18-857745ceb925',
+        'conversation_id': 'a62ca7ba-783c-4b10-809f-d63528ec9c3c',
+        'content': message,
+        'file_data': 
+        {
+          'buffer': base64Encode(imageBuffer),
+          'encoding': '7bit',
+          'mimetype': 'image/png',
+          'fieldname': 'file',
+          'size': imageBuffer.length
+        }
+      };
+
+      _logger.i('Sending base64 buffer: ${base64Encode(imageBuffer)}');
+
+      _logger.i('Sending custom_event: ${jsonEncode(messageBody["buffer"])}');
+      socket.emit('sendMessage', messageBody); 
+      // _controller.clear();
+      _controller.text=base64Encode(imageBuffer);
+      setState(() {
+        _selectedImage = null;
+      });
+    }
+  }
+
+  // Function to disconnect from the Socket.IO server
+  void _disconnect() {
+    _logger.i('Disconnecting');
+    socket.disconnect();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Socket.IO Example'),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: Padding(
+        padding: const EdgeInsets.all(8.0),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
+          children: [
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                labelText: 'Send a message',
+              ),
             ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            const SizedBox(height: 8),
+            ElevatedButton(
+              onPressed: _pickImage,
+              child: const Text('Pick Image'),
+            ),
+            const SizedBox(height: 8),
+            if (_selectedImage != null)
+              Image.file(
+                _selectedImage!,
+                height: 100,
+                width: 100,
+                fit: BoxFit.cover,
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                ElevatedButton(
+                  onPressed: _connect,
+                  child: const Text('Connect'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _sendMessage,
+                  child: const Text('Send'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _disconnect,
+                  child: const Text('Disconnect'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.builder(
+                itemCount: messages.length,
+                itemBuilder: (context, index) {
+                  return ListTile(
+                    title: Text(messages[index]),
+                  );
+                },
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
