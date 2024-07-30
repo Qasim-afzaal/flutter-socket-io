@@ -63,10 +63,8 @@ class _SocketIOExampleState extends State<SocketIOExample> {
   void dispose() {
     // Clean up resources
     _logger.i('Closing Socket.IO connection');
-    if (socket != null) {
-      socket.dispose();
-    }
-    _controller.dispose();
+    socket.dispose();
+      _controller.dispose();
     super.dispose();
   }
 
